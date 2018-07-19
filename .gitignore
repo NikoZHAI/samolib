@@ -1,0 +1,6 @@
+*.ipynb
+*.png
+*.pdf 
+.directory
+*.html
+__pycache__/
