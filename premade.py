@@ -47,12 +47,20 @@ class GOMORS(SamplingMixin, LocalSearchMixin, SurrogateEAMixin, Population):
                  crossover_fun=random_crossover,
                  bounds=[], max_generation=25,
                  stopping_rule='max_eval', max_episode=25,
-                 max_eval=400, *args, **kwargs):
+                 max_eval=400, revolution=True,
+                 no_improvement_step_tol=3,
+                 improvement_tol=1e-2,
+                 verbose=True, *args, **kwargs):
 
         self.max_eval = max_eval
 
         self.selection_fun = self.compute_front
-        self.verbose = True
+
+        self.revolution = revolution
+        self.no_improvement_step_tol = no_improvement_step_tol
+        self.improvement_tol = improvement_tol
+
+        self.verbose = verbose
 
         # Adaptive sampling default configurations: samplers, sizes,
         # sample rates, and populations to sample from.
@@ -210,6 +218,9 @@ class GOMORS(SamplingMixin, LocalSearchMixin, SurrogateEAMixin, Population):
         for _m, _s, _r, _p in cp.deepcopy(config):
             candidates += _m(size=_s, sample_rate=_r, candidates=_p)
 
+        # Remove dups
+        candidates = [c for c in candidates if self.cache.find(c) is None]
+
         if self.verbose:
             print("Newly sampled points: %s" % len(candidates))
 
@@ -232,20 +243,18 @@ class GOMORS(SamplingMixin, LocalSearchMixin, SurrogateEAMixin, Population):
         self.surrogate.fit(self.render_features(pop=self.sampled_archive),
                            self.render_targets(pop=self.sampled_archive))
 
+        # Configure the embedded EA
+        self.config_embedded_ea(**params_ea)
+
         # =========================Meta Modelling==========================
 
         while not self.stop():
 
-            # Detect no improvement in hypervolume (a deadlock)
-            self.progressive_revolution(n_no_improvement=3, tol=1e-2)
+            # Optional Crossover to formulate new population
+            if self.episode > 1: self.crossover_in_true_front()
 
             # Evolutional computation on the surrogate
-            while not self.max_generation_termination():
-                self.select(**params_ea)
-                self.update_front(**params_ea)
-                self.crossover(**params_ea)
-                self.cheap_eval(candidates='global')
-                self.generation += 1
+            self.evolve_surrogate(**params_ea)
 
             print("Episode: %s, Total expensive evaluations: %s, "
                   "True front size: %s, "
@@ -258,26 +267,32 @@ class GOMORS(SamplingMixin, LocalSearchMixin, SurrogateEAMixin, Population):
 
             # Re-evaluate the surrogate-sampled individuals using the PM
             newly_sampled = self.sample_for_expensive_evals()
-            new_front = self.expensive_eval(candidates=newly_sampled)
+            candidates = self.expensive_eval(candidates=newly_sampled)
+            new_front = self.compute_front(pop=candidates)
             self.update_true_front(front=new_front)
 
             # Retraining of the surrogate
-            if self.surrogate._warm_start:
-                X = self.render_features(pop=newly_sampled)
-                y = self.render_targets(pop=newly_sampled)
-            else:
-                X = self.render_features(pop=self.sampled_archive)
-                y = self.render_targets(pop=self.sampled_archive)
-            self.surrogate.fit(X, y)
+            self.train_surrogate(samples=candidates)
 
             # Calculate hypervolume metrics
             self.hypervol_metric(self.true_front, ref=self.reference,
                                  analytical=theo)
 
+            # Detect no improvement in hypervolume (a deadlock)
+            if self.revolution:
+                if self.progressive_revolution(self.no_improvement_step_tol, 1e-2):
+                    # Calculate hypervolume metrics
+                    self.hypervol.pop()
+                    self.hypervol_pos.pop()
+                    self.hypervol_index.pop()
+                    self.hypervol_metric(self.true_front, ref=self.reference,
+                                         analytical=theo)
+                if self.stop(): return self
+
             # Reset the surogate's generation counter
             self.generation = 1
             self.episode += 1
-            self.front = self.true_front.copy()
+            self.front = [] #self.true_front.copy()
 
         return self
 

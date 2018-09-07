@@ -18,10 +18,11 @@ from multiprocessing.pool import Pool
 class SurrogateEAMixin(object):
     """ Mixins for Surrogate Assisted EAs
     """
-    def __init__(self, max_episode=60, *args, **kwargs):
+    def __init__(self, max_episode=60, embedded_ea=None, *args, **kwargs):
         self.true_front = []
         self.episode = 0
         self.max_episode = max_episode
+        self.embedded_ea = embedded_ea
         return None
 
     def _render_pop_by_name(self, name='global'):
@@ -59,8 +60,10 @@ class SurrogateEAMixin(object):
             self.episode = 0
 
             local = self.trial(method=trial_method, criterion=trial_criterion)
-            [i.calc_fitness(fun=self.fitness_fun) for i in local \
-             if self.cache.find(i, overwrite=True) is None]
+
+            for i in local:
+                if self.cache.find(i, overwrite=True) is None:
+                    i.calc_fitness(fun=self.fitness_fun)
 
             self.global_pop = local
             self.elites = []
@@ -68,9 +71,7 @@ class SurrogateEAMixin(object):
             self.true_front = []
             self.bounds = local[0].bounds
 
-        else: # Deprecated
-            # Reset generation for a new round of surrogate assisted search
-            self.generation = 0
+            self.generation = 1
 
         return None
 
@@ -96,29 +97,9 @@ class SurrogateEAMixin(object):
            archive to cache the PM's true Pareto optimal.
         """
 
-        updates = []
         front = self.front if front is None else front
-
-        if self.generation == 0:
-            self.true_front= self.front.copy()
-            return None
-        else:
-            current_front = self.true_front
-
-        for f in front:
-            dominated = np.less_equal(current_front, f)
-            if dominated.any():
-                continue
-            else:
-                dominating = np.less(f, current_front)
-                updates.append(cp.copy(f))
-                to_remove = np.where(dominating)[0]
-                i_pop = 0
-                for r in to_remove:
-                    current_front.pop(r-i_pop)
-                    i_pop += 1
-
-        self.true_front.extend(updates)
+        self.true_front.extend(front)
+        self.true_front = self.compute_front(pop=self.true_front)
         return None
 
     def crossover(self, **kwargs):
@@ -172,28 +153,29 @@ class SurrogateEAMixin(object):
         """ Expensively evaluate the candidates' fitnesses
         """
         if self.n_process <= 1:
-            [self._expensive_eval(i) for i in candidates]
+            new_candidates = [i for i in candidates if self._expensive_eval(i)
+                              is not None]
         else:
             # parallel
             no_dup = remove_duplication(candidates)
-            candidates = self._expensive_eval_parallel(no_dup)
-
-        new_front = self.compute_front(pop=candidates)
+            new_candidates = self._expensive_eval_parallel(no_dup)
 
         if self.verbose and verbose:
-            print("New non-dominated solutions: %s" % len(new_front))
+            print("New expensively evaluations: %s" % len(new_candidates))
 
-        return new_front
+        return new_candidates
 
     def _expensive_eval(self, i):
+
         if self.cache.find(i, overwrite=True) is None:
             i.calc_fitness(fun=self.fitness_fun)
 
             self.cache.save(i)
 
             if hasattr(self, 'sampled_archive'): self.sampled_archive.append(i)
+            return i
 
-        return i
+        return None
 
     def _expensive_eval_parallel(self, candidates):
         pool = Pool(self.n_process)
@@ -214,6 +196,22 @@ class SurrogateEAMixin(object):
         [i.calc_fitness(fun=self.surrogate.render_fitness) for i in candidates]
         return None
 
+    def train_surrogate(self, samples=None):
+        """ Train the surrogate(s)
+        """
+        if samples == []: return self.surrogate
+
+        # Retraining of the surrogate
+        if self.surrogate._warm_start and samples is not None:
+            X = self.render_features(pop=samples)
+            y = self.render_targets(pop=samples)
+        else:
+            X = self.render_features(pop=self.sampled_archive)
+            y = self.render_targets(pop=self.sampled_archive)
+        self.surrogate.fit(X, y)
+
+        return self.surrogate
+
     def _progressive_revolution(self):
         """ Progressive revolution
         """
@@ -225,11 +223,10 @@ class SurrogateEAMixin(object):
 
         self.update_true_front(front=new_front)
 
-        X = self.render_features(self.true_front)
-        y = self.render_targets(self.true_front)
-        self.surrogate.fit(X, y)
-
-        self.front = self.true_front.copy()
+        if self.surrogate._warm_start:
+            self.train_surrogate(samples=new_pop)
+        else:
+            self.train_surrogate(samples=self.sampled_archive)
 
         return None
 
@@ -241,7 +238,8 @@ class SurrogateEAMixin(object):
             return deadlock
 
         diff = np.diff(self.hypervol[-n_no_improvement:])
-        ratio = np.divide(diff, self.hypervol[-n_no_improvement:-1]).__abs__()
+        ratio = np.divide(diff, self.hypervol[-n_no_improvement:-1] + \
+                          np.finfo(float).tiny).__abs__()
 
         if np.less(ratio, tol).all():
             deadlock = True
@@ -285,7 +283,8 @@ class SurrogateEAMixin(object):
         return self._least_crowded
 
     def config_surrogate(self, typ='ANN', params={}, premade=None,
-                         n_models=None, n_process=1, **kwargs):
+                         n_models=None, n_process=1, X_scaler=None,
+                         y_scaler=None, warm_start=False, **kwargs):
         """ Configurate and initialize a surrogate
         """
         if premade is not None:
@@ -296,18 +295,25 @@ class SurrogateEAMixin(object):
 
         if _t in ['ann', 'mlp', 'neural_network', 'neural-network']:
             self.surrogate = NeuralNet(n_objs=self.n_objs, params=params,
-                                       n_models=n_models, n_process=n_process)
+                                       n_models=n_models, n_process=n_process,
+                                       X_scaler=X_scaler, y_scaler=y_scaler,
+                                       warm_start=warm_start)
         elif _t in ['svm', 'svr']:
             self.surrogate = SVR(**params)
         elif _t in ['nusvm', 'nusvr', 'nu-svm', 'nu-svr', 'nu_svm', 'nu_svr']:
             self.surrogate = NuSVR(**params)
         elif _t[:3] == 'rbf':
-            self.surrogate = RBFN(n_objs=self.n_objs, params=params)
+            self.surrogate = RBFN(n_objs=self.n_objs, params=params,
+                                  n_models=n_models, n_process=n_process,
+                                  X_scaler=X_scaler, y_scaler=y_scaler,
+                                  warm_start=warm_start)
         elif 'tree' in _t:
             self.surrogate = DecisionTreeRegressor(**params)
         elif 'kriging' in _t:
             self.surrogate = Kriging(n_objs=self.n_objs, params=params,
-                                     n_models=n_models, n_process=n_process)
+                                     n_models=n_models, n_process=n_process,
+                                     X_scaler=X_scaler, y_scaler=y_scaler,
+                                     warm_start=warm_start)
         else:
             raise NotImplementedError('Surrogate type % not supported...' %typ)
 
@@ -328,3 +334,62 @@ class SurrogateEAMixin(object):
         else:
             raise ValueError("Unknown stopping_rule: %s" % self.stopping_rule)
         return True
+
+    def config_embedded_ea(self, **kwargs):
+        if self.embedded_ea is None:
+            pass
+        elif hasattr(self.embedded_ea, "_external_moea"):
+            self.embedded_ea_ = \
+            self.embedded_ea(problem=self.problem, surrogate=self.surrogate,
+                             size=self.size, generation=self.max_generation,
+                             **kwargs)
+        else:
+            raise ValueError("Unknown embedded EA")
+
+        return None
+
+    def evolve_surrogate(self, **params_ea):
+        if self.embedded_ea is None:
+            self._naive_ea(**params_ea)
+        elif hasattr(self.embedded_ea, "_external_moea"):
+            self._evolve_embedded_ea(**params_ea)
+        else:
+            raise ValueError("Unknown embedded EA")
+
+        return None
+
+    def _naive_ea(self, **params_ea):
+
+        while not self.max_generation_termination():
+            self.crossover_in_true_front(**params_ea)
+            self.cheap_eval(candidates='global')
+            self.select(**params_ea)
+            self.update_front(**params_ea)
+
+            self.generation += 1
+
+        return None
+
+    def _evolve_embedded_ea(self, **params_ea):
+
+        # Apply crossover in the true front for surrogate-assisted optimization
+        # self.crossover_in_true_front(**params_ea)
+
+        # Evolutionary computation over the surrogate
+        # Prevent neglect of the first population
+        if self.episode < 1:
+            self.embedded_ea_.load_external_pop_xf(pop=self.global_pop)
+        else:
+            self.embedded_ea_.load_external_pop_x(pop=self.global_pop)
+        self.embedded_ea_.evolve()
+        self.embedded_ea_.export_internal_pop(pop=self.global_pop)
+
+        # Select and update non-dominated solutions
+        self.select(**params_ea)
+        self.update_front(**params_ea)
+        self.generation = self.max_generation
+
+        return None
+
+
+

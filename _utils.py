@@ -6,10 +6,15 @@ Created on Wed May  9 11:22:07 2018
 @author: niko
 """
 
+import warnings
+
 import numpy as np
+from scipy.special import binom
 import copy as cp
+from deap.tools._hypervolume.hv import hypervolume
 from operator import methodcaller, attrgetter
 from functools import partial
+from sklearn.base import BaseEstimator, TransformerMixin
 
 
 def _no_fit_fun(*args, **kwargs):
@@ -24,27 +29,38 @@ def _no_selection_fun(*args, **kwargs):
 
 def construct_problem(dim, n_objs, fun, bounds):
     p = UnconstrainedProblem(dim=dim, n_objs=n_objs, fun=fun)
+    bounds = np.array(bounds)
+
+    # Generate bounds
+    if bounds.ndim == 1 and bounds.__len__() == 2:
+        bounds = np.repeat(bounds, dim, axis=0)
+    elif dim == bounds.shape[0]:
+        pass
+    elif dim != bounds.shape[0]:
+        raise NotImplementedError("Boundary and gene dimension "
+                                  "does not match...")
+    else:
+        raise NotImplementedError("Problems with no boundary or "
+                                  "single boundary "
+                                  "are not implemented yet...")
+
     p.bounds = bounds
     return p
 
 
-def rend_k_elites(pop, elites, **kwargs):
-    for i in pop:
-        inter = elites[0]
-        _i = 0
-        dominated = None
+def rend_k_elites(pop, k=1, **kwargs):
+    if pop.n_objs > 1:
+        _fun = pop.compute_front
+    else:
+        _fun = partial(_rend_k_elites_so, pop=pop, k=k)
 
-        for e in elites[1:]:
-            if i.__lt__(e) and inter.__lt__(e):
-                inter = e
-                dominated = _i
-            _i += 1
+    return _fun
 
-        if dominated:
-            elites.__setitem__(dominated, i)
 
-    return elites
+def _rend_k_elites_so(pop, k=1):
+    elites = sort_by_fitness(tosort=pop.global_pop, obj=0, reverse=False)[:k]
 
+    return elites.copy()
 
 def reject_acceptance(elites, gene_len, **kwargs):
     p = np.random.uniform()
@@ -186,7 +202,43 @@ def gaussian_mutator(gene, bounds, doomed, u=0., st=0.2, **kwargs):
 
 def sort_by_fitness(tosort, obj, reverse=False):
     tosort.sort(key=methodcaller('get_fitness', obj=obj), reverse=reverse)
-    return None
+    return tosort
+
+
+def valid_moead_popsize(size, n_objs):
+
+    # find the largest H resulting in a population smaller or equal to NP
+    if n_objs == 2:
+        H = size - 1
+    elif n_objs == 3:
+        H = int( 0.5 * (np.sqrt(8. * size + 1.) - 3.) )
+    else:
+        H = 1
+        while binom(H + n_objs -1, n_objs - 1) <= size:
+            H += 1
+        H -= 1
+
+    _size = binom(H + n_objs -1, n_objs - 1)
+
+    if _size + np.finfo(float).tiny < size:
+        _size = binom(H + n_objs, n_objs - 1)
+        m = "The population size is not suitable for MOEAD's grid weights " \
+            "generation. Instead, use %i as pop size in 'evolve_surrogate'."\
+            % (_size)
+
+        size = _size
+        warnings.warn(m)
+
+    return int(size)
+
+
+def construct_moead_problem_with_surrogate(problem, surrogate):
+    """ Construct a PyGMO problem with surrogate as its fitness function
+    """
+    new_prob = cp.deepcopy(problem)
+    new_prob.fitness = surrogate.render_fitness
+
+    return new_prob
 
 
 def calc_hypervol(ref=[], front=[], minimize=True, **kwargs):
@@ -205,14 +257,29 @@ def calc_hypervol(ref=[], front=[], minimize=True, **kwargs):
     hypevol : scalar, the calculated hypervolume between the reference point
               and the Pareto optimals.
     """
+
+    # return distance if single objective
+    if front.shape[1] == 1:
+        return np.subtract(front.ravel() - ref).sum()
+    elif front.shape[1] == 2:
+        _fs = front[ front[:, 0].argsort()[::-1]]
+        return _calc_hypervol(ref=ref, front=_fs, minimize=minimize, **kwargs)
+    else:
+        pass
+
+    return hypervolume(front, ref)
+
+
+def _calc_hypervol(ref=[], front=[], minimize=True, **kwargs):
+
     hypevol = np.insert(front[:-1, 0], 0, ref[0]) - front[:, 0]
 
-    if minimize:
-        for i in range(1, front.shape[1]):
+    for i in range(1, front.shape[1]):
+
+        if minimize:
             hypevol *= (ref[i] - front[:, i])
-    else:
-        hypevol = -hypevol
-        for i in range(1, front.shape[1]):
+        else:
+            hypevol = -hypevol
             hypevol *= (front[:, i] - ref[i])
 
     return hypevol.sum()
@@ -226,6 +293,20 @@ def remove_duplication(pop, **kwargs):
             if (pop[i] == pop[j] and i != j): ind_dup.append(j)
 
     return [pop[i] for i in range(len(pop)) if i in ind_dup]
+
+
+def bounds_scale(X, bounds, scale=(-1., 1.)):
+    """ Scale the features X with range in bounds into range in scale
+    """
+
+    if X.ndim == 1: X = X.reshape(1, -1)
+
+    _X = (X - bounds[:,0]) * (scale[1] - scale[0])
+    _X = _X / (bounds[:,1] - bounds[:,0]) + scale[0]
+
+    if X.ndim == 1: return _X.ravel()
+
+    return _X
 
 
 class Cache(object):
@@ -277,15 +358,135 @@ class Cache(object):
 
 
 class UnconstrainedProblem(object):
-    def __init__(self, dim, n_objs, fun):
+    def __init__(self, dim, n_objs, fun, bounds=None):
         self.dim = dim
         self.n_objs = n_objs
-        self.fun = fun
+        if fun is not None: self.fun = fun
         self.n_evals = 0
+        self.bounds = np.array(bounds)
 
     def obj_fun(self, X):
         self.n_evals += 1
         return self.fun(X)
+
+    def fitness(self, x):
+        """ Alias for self.fun
+        """
+        return self.obj_fun(x)
+
+    def get_bounds(self):
+        if self.bounds is None:
+            raise ValueError("Problem bounds undefined...")
+        return self.bounds[:, 0], self.bounds[:, 1]
+
+    def get_nobj(self):
+        return self.n_objs
+
+
+class IdentityScaler(BaseEstimator, TransformerMixin):
+
+    def __init__(self, copy=False):
+        self.copy = copy
+        return None
+
+    def fit(self, X, y=None):
+        return None
+
+    def fit_transform(self, X, y=None):
+        if self.copy: return X.copy()
+        return X
+
+    def transform(self, X, y='deprecated', copy=None):
+        if self.copy: return X.copy()
+        return X
+
+    def partial_fit(self, X, y=None):
+        return None
+
+    def inverse_transform(self, X, copy=False):
+        if self.copy or copy: return X.copy()
+        return X
+
+
+class BoundsScaler(BaseEstimator, TransformerMixin):
+
+    def __init__(self, bounds, scale_to=(-1., 1.), copy=True):
+        self.copy = copy
+        self.bounds = bounds
+        self.scale_to = scale_to
+
+        if self.scale_to is None:
+            raise ValueError("Missing parameter 'scale-to' in BoundsScaler")
+
+        return None
+
+    def fit(self, X, y=None):
+        return None
+
+    def fit_transform(self, X, y=None):
+        if self.copy: return bounds_scale(X, bounds=self.bounds,
+                                          scale=self.to_scale)
+        X[:] = bounds_scale(X, bounds=self.bounds, scale=self.to_scale)[:]
+        return X
+
+    def transform(self, X, y='deprecated', copy=None):
+        if self.copy: return bounds_scale(X, bounds=self.bounds,
+                                          scale=self.to_scale)
+        X[:, :] = bounds_scale(X, bounds=self.bounds,
+                               scale=self.to_scale)[:, :]
+        return X
+
+    def partial_fit(self, X, y=None):
+        return None
+
+    def inverse_transform(self, X, copy=False):
+        if X.ndim == 1: _X = X.reshape(1, -1)
+
+        _X = (_X - self.scale_to[0]) / (self.scale_to[1] - self.scale_to[0])
+        _X = _X * (self.bounds[:,1] - self.bounds[:,0]) + self.bounds[:, 0]
+
+        if X.ndim == 1: _X = _X.ravel()
+
+        if self.copy or copy: return _X
+
+        X[:] = _X[:]
+
+        return X
+
+
+class FactorScaler():
+
+    def __init__(self, factor, copy=True):
+        self.copy = copy
+        self.factor = factor
+
+        if self.factor is not None and abs(self.factor) > 0.:
+            pass
+        else:
+            raise ValueError("factor must be a non-zero numerical value")
+
+        return None
+
+    def fit(self, X, y=None):
+        return None
+
+    def fit_transform(self, X, y=None):
+        if self.copy: return (X * self.factor)
+        X[:] = X[:] * self.factor
+        return X
+
+    def transform(self, X, y='deprecated', copy=None):
+        if self.copy: return (X * self.factor)
+        X[:] = X[:] * self.factor
+        return X
+
+    def partial_fit(self, X, y=None):
+        return None
+
+    def inverse_transform(self, X, copy=False):
+        if self.copy: return (X / self.factor)
+        X[:] = X[:] / self.factor
+        return X
 
 
 class NoFitnessFunError(RuntimeError):

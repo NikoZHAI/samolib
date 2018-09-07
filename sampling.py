@@ -9,7 +9,7 @@ Created on Thu June 21 09:42:07 2018
 import numpy as np
 import copy as cp
 from ea import Individual
-from _utils import calc_hypervol, sort_by_fitness
+from _utils import calc_hypervol
 
 class SamplingMixin(object):
     """ Mixins for adaptive sampling
@@ -104,10 +104,10 @@ class SamplingMixin(object):
         _previous = self.true_front
 
         # Sort the individuals in the current true front on one axis
-        sort_by_fitness(tosort=_previous, obj=0, reverse=self.minimize)
+#        sort_by_fitness(tosort=_previous, obj=0, reverse=self.minimize)
 
         # Extract fitness from the true front individuals to form front_matrix
-        front_matrix = np.array([[f for f in i.fitness] for i in _previous])
+        front_matrix = self.render_targets(_previous)
 
         # Calculate the current hypervolume given the reference
         hv_init = calc_hypervol(self.reference, front_matrix)
@@ -117,9 +117,9 @@ class SamplingMixin(object):
             _ = [f]
             _.extend(_previous)
 
-            sort_by_fitness(tosort=_, obj=0, reverse=self.minimize)
+#            sort_by_fitness(tosort=_, obj=0, reverse=self.minimize)
 
-            front_matrix = np.array([[f for f in i.fitness] for i in _])
+            front_matrix = self.render_targets(_)
 
             hvs.append(calc_hypervol(self.reference, front_matrix))
 

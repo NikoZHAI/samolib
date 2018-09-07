@@ -9,6 +9,7 @@ Created on Sun May 27 14:33:48 2018
 import numpy as np
 import pandas as pd
 from _utils import UnconstrainedProblem
+import sys
 
 
 def load_theo(path, n_objs=2):
@@ -25,14 +26,23 @@ class Kursawe(UnconstrainedProblem):
         return None
 
 
-class ZDT1(UnconstrainedProblem):
+class ZDT_SOLUTION_MIXIN(object):
+
+    def solutions(self, resolution=1000):
+        xs = np.zeros((resolution+1, self.dim))
+        xs[:, 0] = np.linspace(0., 1., resolution+1)
+
+        return np.apply_along_axis(self.fun, 1, xs)
+
+
+class ZDT1(UnconstrainedProblem, ZDT_SOLUTION_MIXIN):
     def __init__(self):
         super(ZDT1, self).__init__(dim=30, n_objs=2, fun=zdt1)
         self.bounds = np.repeat([[0., 1.]], self.dim, axis=0)
         return None
 
 
-class ZDT2(UnconstrainedProblem):
+class ZDT2(UnconstrainedProblem, ZDT_SOLUTION_MIXIN):
     def __init__(self):
         super(ZDT2, self).__init__(dim=30, n_objs=2, fun=zdt2)
         self.bounds = np.repeat([[0., 1.]], self.dim, axis=0)
@@ -45,17 +55,37 @@ class ZDT3(UnconstrainedProblem):
         self.bounds = np.repeat([[0., 1.]], self.dim, axis=0)
         return None
 
+    def solutions(self, resolution=1000):
+        x1 = np.linspace(0., 1., resolution+1)
+        xs = np.zeros((resolution+1, self.dim))
+        xs[:, 0] = x1
 
-class ZDT4(UnconstrainedProblem):
+        res = np.apply_along_axis(self.fun, 1, xs)
+
+        to_save = []
+        for i, row in enumerate(res):
+            dominated = False
+            for j, _row in enumerate(res):
+                if i != j and np.greater_equal(row, _row).all():
+                    dominated = True
+                    break
+                else:
+                    continue
+            if not dominated: to_save.append(i)
+
+        return res[to_save]
+
+
+class ZDT4(UnconstrainedProblem, ZDT_SOLUTION_MIXIN):
     def __init__(self):
         super(ZDT4, self).__init__(dim=10, n_objs=2, fun=zdt4)
         self.bounds = np.repeat([[0., 1.], [-5., 5.]], [1, self.dim-1], axis=0)
         return None
 
 
-class ZDT6(UnconstrainedProblem):
-    def __init__(self):
-        super(ZDT6, self).__init__(dim=10, n_objs=2, fun=zdt6)
+class ZDT6(UnconstrainedProblem, ZDT_SOLUTION_MIXIN):
+    def __init__(self, dim=10):
+        super(ZDT6, self).__init__(dim=dim, n_objs=2, fun=zdt6)
         self.bounds = np.repeat([[0., 1.]], self.dim, axis=0)
         return None
 
@@ -175,7 +205,7 @@ class LZ6(UnconstrainedProblem):
     def __init__(self, dim=3):
         if dim < 3:
             raise ValueError("Dimension of problem LZ6 must be greater than 2")
-        super(LZ6, self).__init__(dim=dim, n_objs=2, fun=lz6)
+        super(LZ6, self).__init__(dim=dim, n_objs=3, fun=lz6)
         self.bounds = np.repeat([[0., 1.], [-2., 2.]], [2, self.dim-2], axis=0)
         return None
 
@@ -265,6 +295,7 @@ class Rastrigin(UnconstrainedProblem):
     def optimal_x(self):
         return np.repeat([0.], self.dim)
 
+
 class Ackley(UnconstrainedProblem):
     def __init__(self):
         super(Ackley, self).__init__(dim=2, n_objs=1, fun=ackley)
@@ -277,6 +308,7 @@ class Ackley(UnconstrainedProblem):
     def optimal_x(self):
         return np.repeat([0.], self.dim)
 
+
 class Levi13(UnconstrainedProblem):
     def __init__(self):
         super(Levi13, self).__init__(dim=2, n_objs=1, fun=levi13)
@@ -288,6 +320,41 @@ class Levi13(UnconstrainedProblem):
 
     def optimal_x(self):
         return np.repeat([1.], self.dim)
+
+
+class Shakespears(UnconstrainedProblem):
+    __moto__ = "To be or not to be"
+
+    def __init__(self, moto=None):
+        if moto.__class__ is str:
+            self.__moto__ = moto
+
+        dim = len(self.__moto__)
+
+        super(Shakespears, self).__init__(dim=dim, n_objs=1, fun=None)
+
+        code = np.array([ord(c) for c in self.__moto__], dtype=int)
+
+        self.bounds = np.repeat([[code.min(), code.max()]], self.dim, axis=0)
+
+        self.__code__ = code
+        return None
+
+    def fun(self, x):
+        if not len(x) == self.dim:
+            raise RuntimeError("Length of the str mutated...")
+
+        print(''.join(chr(int(c)) for c in x))
+        match = np.equal(x, self.__code__)
+
+        if match.all():
+            sys.exit("Congrats! The famous moto found with %i evaluations!" \
+                     % self.n_evals)
+
+        return np.array([-(np.count_nonzero(match) / self.dim) ** 2.])
+
+    def solutions(self):
+        return self.__moto__
 
 
 def kursawe(x):
@@ -393,9 +460,9 @@ def lz2(x):
     s1 = _solution_lz2(x[0], n, j1s)
     s2 = _solution_lz2(x[0], n, j2s)
 
-    f1 = x[0] + 2./np.linalg.norm(j1s) * \
+    f1 = x[0] + 2./np.linalg.norm(j1s, 1) * \
          np.subtract(x1s, s1).__pow__(2.).sum()
-    f2 = 1. - x[0]**.5 + 2./np.linalg.norm(j2s) * \
+    f2 = 1. - x[0]**.5 + 2./np.linalg.norm(j2s, 1) * \
          np.subtract(x2s, s2).__pow__(2.).sum()
 
     return np.array([f1, f2])
@@ -497,8 +564,8 @@ def _solution_lz6(x1, x2, n, js):
 
 def lz7(x):
     x1s, x2s, n, j1s, j2s = _init_lz(x)
-    y1 = _solution_lz1(x[0], n, j1s)
-    y2 = _solution_lz1(x[0], n, j2s)
+    y1 = x1s - _solution_lz1(x[0], n, j1s)
+    y2 = x2s - _solution_lz1(x[0], n, j2s)
 
     t1 = 4.*np.power(y1, 2.) - np.cos(8.*np.pi*y1) + 1.
     t2 = 4.*np.power(y2, 2.) - np.cos(8.*np.pi*y2) + 1.
@@ -511,8 +578,8 @@ def lz7(x):
 
 def lz8(x):
     x1s, x2s, n, j1s, j2s = _init_lz(x)
-    y1 = _solution_lz1(x[0], n, j1s)
-    y2 = _solution_lz1(x[0], n, j2s)
+    y1 = x1s - _solution_lz1(x[0], n, j1s)
+    y2 = x2s - _solution_lz1(x[0], n, j2s)
 
     t1 = 4.*np.power(y1, 2.).sum() - 2. * np.cos(20.*np.pi*y1 / \
                                                  np.sqrt(j1s)).prod() + 2.
@@ -536,4 +603,3 @@ def lz9(x):
          np.subtract(x2s, s2).__pow__(2.).sum()
 
     return np.array([f1, f2])
-

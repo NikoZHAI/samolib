@@ -108,6 +108,14 @@ class LocalSearchMixin(object):
                                           max_generation=max_generation)
 
         # Perform local search
+        if hasattr(self, 'embedded_ea'):
+            if hasattr(self.embedded_ea, '_external_moea'):
+                return self._local_search_with_embedded_ea(pop=_pop, **kwargs)
+            else:
+                pass
+        else:
+            pass
+
         _pop.evolve(u=u, st=st, trial_method=trial_method,
                     trial_criterion=trial_criterion)
 
@@ -115,6 +123,7 @@ class LocalSearchMixin(object):
             i.bounds = self.bounds
 
         return _pop.front
+
 
     def _gen_local_search_pop(self, pioneer, r, loc, dim, size, fitness_fun,
                               selection_fun, mutation_fun, mutation_rate,
@@ -134,7 +143,8 @@ class LocalSearchMixin(object):
             _i += 1
 
         # Instantiate a new population
-        _copy = Population(dim=dim, size=size-1, fitness_fun=fitness_fun,
+        _copy = Population(dim=dim, size=size-1, n_objs=self.n_objs,
+                           fitness_fun=fitness_fun,
                            selection_fun=selection_fun,
                            mutation_fun=mutation_fun,
                            mutation_rate=mutation_rate,
@@ -145,3 +155,19 @@ class LocalSearchMixin(object):
         _copy.global_pop.append(pioneer)
         _copy.__setattr__('size', size)
         return _copy
+
+
+    def _local_search_with_embedded_ea(self, pop, **kwargs):
+        """ Local search based on an embedded EA
+        """
+        size, generation = int(pop.size), int(pop.max_generation)
+        local_ea = self.embedded_ea(problem=pop.problem, size=size,
+                                    generation=generation, **kwargs)
+        local_ea.evolve()
+        local_ea.export_internal_pop(pop=pop.global_pop)
+        pop.select()
+
+        for i in pop.elites:
+            i.bounds = self.bounds
+
+        return pop.elites.copy()
