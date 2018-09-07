@@ -8,37 +8,27 @@ Created on Wed May  9 11:22:07 2018
 
 import numpy as np
 import copy as cp
+import pygmo as pg
 from pyDOE import lhs
 from _utils import rend_k_elites, random_crossover, calc_cwd_dist
-from _utils import calc_hypervol, sort_by_fitness
-from _utils import Cache, _no_fit_fun, construct_problem
+from _utils import calc_hypervol, valid_moead_popsize
+from _utils import construct_moead_problem_with_surrogate
+from _utils import Cache, _no_fit_fun, construct_problem, hypervolume
+
 
 class Individual(object):
 
     def __init__(self, dim=3, bounds=[[-5., 5.]], name='Undefined',
                  fitness=np.array([np.inf]), trial_method='random',
-                 gene=None, **kwargs):
+                 gene=None, dtype=None, **kwargs):
         self.dimension = dim
-        self._gene = 'vector of {} elements (parameters)...'.format(dim)
         self.name = name
         self._dominated = False
-        self.bounds = np.add(bounds, [0., 1e-12])
+        self.bounds = np.array(bounds)
         self.fitness = fitness
         self.acceptance = 0.
         self.trial_method = trial_method
-
-        # Generate bounds
-        if self.bounds.__len__() == 1 and self.bounds.shape.__len__() == 2:
-            self.bounds = np.repeat(self.bounds, self.dimension, axis=0)
-        elif dim == self.bounds.shape[0]:
-            pass
-        elif dim != self.bounds.shape[0]:
-            raise NotImplementedError("Boundary and gene dimension "
-                                      "does not match...")
-        else:
-            raise NotImplementedError("Problems with no boundary or "
-                                      "single boundary "
-                                      "are not implemented yet...")
+        self.dtype = dtype
 
         # Make trials
         if trial_method == 'random':
@@ -60,8 +50,18 @@ class Individual(object):
 
     def mutate(self, routine, rate, **kwargs):
         doomed = np.random.sample(self.dimension).__lt__(rate)
+
+        if hasattr(self.dtype, '__iter__'):
+            for i in np.argwhere(doomed).ravel():
+                if self.dtype[i] is int:
+                    self.gene[i] = np.random.random_integers(*self.bounds[i])
+                    doomed[i] = False
+                else:
+                    continue
+
         if doomed.any():
             self.gene = routine(self.gene, self.bounds, doomed, **kwargs)
+
         return self.gene
 
     def get_fitness(self, obj):
@@ -111,12 +111,11 @@ class Population(object):
 
     def __init__(self, problem=None, dim=3, n_objs=2, size=32,
                  fitness_fun=_no_fit_fun, reference=[],
-                 selection_fun=rend_k_elites,
-                 mutation_fun=None, mutation_rate=0.1,
-                 crossover_fun=random_crossover,
-                 stopping_rule='max_generation',
-                 bounds=[], max_generation=200, max_eval=8000,
-                 minimize=True, *args, **kwargs):
+                 selection_fun=None, mutation_fun=None,
+                 mutation_rate=0.1, crossover_fun=random_crossover,
+                 stopping_rule='max_generation', bounds=[], max_generation=200,
+                 max_eval=8000, minimize=True, n_process=1, dtype=int,
+                 mixinteger=False, *args, **kwargs):
 
         if problem is None:
             problem = construct_problem(dim=dim, n_objs=n_objs,
@@ -127,6 +126,25 @@ class Population(object):
         self.n_objs = problem.n_objs
         self.fitness_fun = problem.obj_fun
         self.bounds = problem.bounds
+
+        self.mixinteger = mixinteger # For problems contain integer variables
+
+        if mixinteger:
+
+            if dtype is int:
+                self.dtype = [int] * self.dim
+            elif hasattr(dtype, '__iter__'):
+                if len(dtype) == 1:
+                    self.dtype = dtype * self.dim
+                elif len(dtype) == self.dim:
+                    self.dtype = dtype
+                else:
+                    raise ValueError("Problem dimension and dtype not equal")
+            else:
+                raise TypeError("dtype must be a type or a list of types")
+
+        else:
+            self.dtype = dtype
 
         self.size = size
         self.gene_len = self.dim
@@ -143,15 +161,15 @@ class Population(object):
         self.front = []
         self.cache = Cache()
         self.hypervol = []
-        self.hypervol_diff = []
-        self.hypervol_cov = []
+        self.hypervol_index = []
+        self.hypervol_pos = []
 
-        self.selection_fun = selection_fun
+        self.selection_fun = selection_fun or rend_k_elites(pop=self, k=1)
         self.mutation_fun = mutation_fun
         self.mutation_rate = mutation_rate
         self.crossover_fun = crossover_fun
 
-        self.n_process = 1
+        self.n_process = n_process
         return None
 
     def generate_init(self, trial_method='random',
@@ -161,8 +179,13 @@ class Population(object):
             self.episode = 0
 
             local = self.trial(method=trial_method, criterion=trial_criterion)
+
+            if self.mixinteger:
+                local = self.trim_mixinteger(local)
+
             for i in local:
-                i.calc_fitness(fun=self.fitness_fun)
+                if self.cache.find(i, overwrite=True) is None:
+                    i.calc_fitness(fun=self.fitness_fun)
 
             self.global_pop = cp.deepcopy(local)
             self.elites = []
@@ -175,15 +198,17 @@ class Population(object):
 
         return None
 
-    def trial(self, method='random', **kwargs):
+    def trial(self, method='random', criterion='cm', **kwargs):
         if method == 'random':
             local = [Individual(dim=self.dim, bounds=self.bounds, \
-                     trial_method=method, **kwargs) for _i in range(self.size)]
+                     trial_method=method, dtype=self.dtype, **kwargs) \
+                     for _i in range(self.size)]
         elif method == 'lhs':
-            normalized_trials = self.trial_lhs(criterion='cm')
-            local = [Individual(dim=self.dim, bounds=self.bounds, \
-                                trial_method=method, gene=g,       \
-                                **kwargs) for g in normalized_trials]
+            normalized_trials = self.trial_lhs(criterion=criterion)
+            local = [Individual(dim=self.dim, bounds=self.bounds,
+                                trial_method=method, gene=g, dtype=self.dtype,
+                                **kwargs) \
+                     for g in normalized_trials]
         else:
             raise NotImplementedError('%s trial design method is not '
                                       'implemented yet' % (method))
@@ -191,6 +216,19 @@ class Population(object):
 
     def trial_lhs(self, criterion='cm'):
         return lhs(n=self.dim, samples=self.size, criterion=criterion)
+
+    def trim_mixinteger(self, pop):
+        """ Use mixinteger technique to trim float genes
+        """
+
+        for i in pop:
+            for j, t in enumerate(self.dtype):
+                if t is int:
+                    new_val = np.floor(i.gene[j])
+                    if new_val - i.bounds[j, 0] < 0. : new_val += 1.
+                    i.gene[j] = new_val
+
+        return pop
 
     def crossover(self, **kwargs):
         """ Perform crossover in self.front (fake front in surrogate EA)
@@ -218,71 +256,45 @@ class Population(object):
         return offspring_pop
 
     def _post_crossover(self, pop, archive, mutate, calc_fitness, **kwargs):
-        if mutate and calc_fitness:
-            for i, _gene in zip(pop, archive):
-                i.gene = np.array(_gene)
-                i.mutate(self.mutation_fun, self.mutation_rate, **kwargs)
-                i.calc_fitness(fun=self.fitness_fun)
 
-        elif mutate:
-            for i, _gene in zip(pop, archive):
-                i.gene = np.array(_gene)
+        for i, _gene in zip(pop, archive):
+            i.gene = np.array(_gene)
+
+            if mutate:
                 i.mutate(self.mutation_fun, self.mutation_rate, **kwargs)
 
-        elif calc_fitness:
-            for i, _gene in zip(pop, archive):
-                i.gene = np.array(_gene)
+            if calc_fitness:
                 i.calc_fitness(fun=self.fitness_fun)
-
-        else:
-            for i, _gene in zip(pop, archive):
-                i.gene = np.array(_gene)
 
         return None
 
     def select(self, rank=None, **kwargs):
-        self.elites = self.compute_front(**kwargs)
+        self.elites = self.selection_fun(**kwargs)
         return None
 
-    def cache(self, individual, **kwargs):
-        self.cached.append(individual)
-        return None
-
-    def evolve(self, early_stopping=False, **kwargs):
+    def evolve(self, early_stopping=False, metric=False, **kwargs):
         self.generate_init(**kwargs)
 
-        while self.generation <= self.max_generation:
+        while not self.stop():
             self.select(**kwargs)
             self.update_front(**kwargs)
             self.crossover(**kwargs)
             if self.verbose:
                 print(self.generation)
+
+            if metric:
+                self.hypervol_metric(self.front, self.reference,
+                                     self.problem.solutions())
             self.generation += 1
         return None
 
-    def update_front(self, **kwargs):
+    def update_front(self, pop=None, **kwargs):
+        pop = self.elites.copy() if pop is None else pop
+
         # Update current front
-        updates = []
-        if self.generation == 0:
-            self.front = self.elites.copy()
-            return None
-        else:
-            current_front = self.front
+        pop.extend(self.front)
 
-        for f in self.elites:
-            dominated = np.less_equal(current_front, f)
-            if dominated.any():
-                continue
-            else:
-                dominating = np.less(f, current_front)
-                updates.append(cp.copy(f))
-                to_remove = np.where(dominating)[0]
-                i_pop = 0
-                for r in to_remove:
-                    current_front.pop(r-i_pop)
-                    i_pop += 1
-
-        self.front.extend(updates)
+        self.front = self.compute_front(pop=pop)
         return None
 
     def compute_front(self, pop=None, **kwargs):
@@ -356,13 +368,15 @@ class Population(object):
             reference point
         """
         # Sort the individuals in the current true front on one axis
-        sort_by_fitness(tosort=front, obj=0, reverse=minimize)
+        # sort_by_fitness(tosort=front, obj=0, reverse=minimize)
 
         # Extract fitness from the true front individuals to form front_matrix
-        front_matrix = np.array([[f for f in i.fitness] for i in front])
+        front_matrix = self.render_targets(front)
 
         # Calculate the current hypervolume given the reference
         self.hypervol.append(calc_hypervol(ref, front_matrix))
+        self.hypervol_pos.append(hypervolume(front_matrix, ref))
+        self.hypervol_index.append(self.problem.n_evals)
 
         if  analytical is False:
             self.hypervol_ana = 0.
@@ -382,12 +396,19 @@ class Population(object):
         else:
             pass
 
-        # If analytical solutions given, calculate hv difference and coverage
-        hv_diff = self.hypervol_ana - self.hypervol[-1]
-        self.hypervol_diff.append(hv_diff)
-        self.hypervol_cov.append(self.hypervol[-1]/self.hypervol_ana)
-
         return None
+
+    @property
+    def hypervol_cov(self):
+        if self.hypervol_ana == 0.: return []
+        cov = np.divide(self.hypervol_pos, self.hypervol_ana)
+        return list(cov)
+
+    @property
+    def hypervol_diff(self):
+        if self.hypervol_ana == 0.: return []
+        diff = np.subtract(self.hypervol_ana, self.hypervol_pos)
+        return list(diff)
 
     def _render_pop_by_name(self, name='global'):
         """ Render a pop ( or a frontier or a set of solutions) given its name
@@ -442,3 +463,108 @@ class Population(object):
         if self.max_generation <= self.generation: terminate = True
         return terminate
 
+
+class BasePyGMO_MOEA(object):
+
+    def load_external_pop_x(self, pop):
+        size_external = len(pop)
+        N = min(size_external, self.pop_size)
+
+        for i in range(N):
+            x = pop[i].gene.copy()
+            self.population.set_x(i, x)
+
+        return None
+
+    def load_external_pop_xf(self, pop):
+        size_external = len(pop)
+        N = min(size_external, self.pop_size)
+
+        for i in range(N):
+            x = pop[i].gene.copy()
+            f = pop[i].fitness.copy()
+            self.population.set_xf(i, x, f)
+
+        return None
+
+    def export_internal_pop(self, pop):
+        size_external = len(pop)
+        N = min(size_external, self.pop_size)
+
+        xs = self.population.get_x()
+        fs = self.population.get_f()
+
+        for i in range(N):
+            pop[i].gene = xs[i].copy()
+            pop[i].fitness = fs[i].copy()
+
+        return None
+
+    def evolve(self):
+        self.population = self.algorithm.evolve(self.population)
+        return self.population
+
+
+class MOEAD(BasePyGMO_MOEA):
+    _external_moea = True
+    _name = 'MOEAD'
+
+    def __init__(self, problem, surrogate=None, size=100, generation=1,
+                 weight_generation="grid", decomposition="tchebycheff",
+                 neighbours=20, CR=1, F=0.5, eta_m=20, realb=0.9, limit=2,
+                 preserve_diversity=True, seed=None, *args, **kwargs):
+
+        # Set seed
+        seed = np.random.randint(1e8) if seed is None else seed
+
+        a = pg.algorithm(pg.moead(gen=generation, weight_generation=weight_generation,
+                                  decomposition=decomposition, neighbours=neighbours,
+                                  CR=CR, F=F, eta_m=eta_m, realb=realb, limit=limit,
+                                  preserve_diversity=preserve_diversity, seed=seed))
+
+        # Check sanity for weight_generation
+        if weight_generation == "grid":
+            size = valid_moead_popsize(size=size, n_objs=problem.n_objs)
+
+        if surrogate is not None:
+            prob = construct_moead_problem_with_surrogate(problem, surrogate)
+        else:
+            prob = problem
+
+        pop = pg.population(prob=pg.problem(prob), size=size, seed=seed)
+
+        self.pop_size = size
+        self.problem = prob
+        self.population = pop
+        self.algorithm = a
+
+        return None
+
+
+class NSGA2(BasePyGMO_MOEA):
+    _external_moea = True
+    _name = 'NSGA2'
+
+    def __init__(self, problem, surrogate=None, size=100, generation=10,
+                 cr=0.9, eta_c=10, m=0.1, eta_m=10, seed=None,
+                 *args, **kwargs):
+
+        # Set seed
+        seed = np.random.randint(1e8) if seed is None else seed
+
+        a = pg.algorithm(pg.nsga2(gen=generation, cr=cr, eta_c=eta_c, m=m,
+                                  eta_m=eta_m, seed=seed))
+
+        if surrogate is not None:
+            prob = construct_moead_problem_with_surrogate(problem, surrogate)
+        else:
+            prob = problem
+
+        pop = pg.population(prob=pg.problem(prob), size=size, seed=seed)
+
+        self.pop_size = size
+        self.problem = prob
+        self.population = pop
+        self.algorithm = a
+
+        return None
