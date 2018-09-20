@@ -3,4 +3,7 @@
 *.pdf 
 .directory
 *.html
+test_pyswmm/
+test_epanet/
+summary_07232018.MD
 __pycache__/

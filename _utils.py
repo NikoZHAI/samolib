@@ -62,6 +62,11 @@ def _rend_k_elites_so(pop, k=1):
 
     return elites.copy()
 
+
+def rand_select_k(pop, k=10):
+    return np.random.choice(pop, 10)
+
+
 def reject_acceptance(elites, gene_len, **kwargs):
     p = np.random.uniform()
     picked = np.random.choice(elites)
@@ -262,7 +267,7 @@ def calc_hypervol(ref=[], front=[], minimize=True, **kwargs):
     if front.shape[1] == 1:
         return np.subtract(front.ravel() - ref).sum()
     elif front.shape[1] == 2:
-        _fs = front[ front[:, 0].argsort()[::-1]]
+        _fs = front[ front[:, 0].argsort()[::-1] ]
         return _calc_hypervol(ref=ref, front=_fs, minimize=minimize, **kwargs)
     else:
         pass
@@ -273,14 +278,18 @@ def calc_hypervol(ref=[], front=[], minimize=True, **kwargs):
 def _calc_hypervol(ref=[], front=[], minimize=True, **kwargs):
 
     hypevol = np.insert(front[:-1, 0], 0, ref[0]) - front[:, 0]
+    sign0 = np.less(hypevol, 0.)
 
-    for i in range(1, front.shape[1]):
-
-        if minimize:
-            hypevol *= (ref[i] - front[:, i])
-        else:
-            hypevol = -hypevol
-            hypevol *= (front[:, i] - ref[i])
+    if minimize:
+        inter = (ref[1] - front[:, 1])
+        sign1 = np.less(inter, 0.)
+        hypevol = np.abs(inter * hypevol)
+        hypevol[np.where(np.logical_or(sign0, sign1))] *= -1.
+    else:
+        inter = front[:, 1] - ref[1]
+        sign1 = np.less(inter, 0.)
+        hypevol = np.abs(inter * hypevol)
+        hypevol[np.where(np.logical_or(np.logical_not(sign0), sign1))] *= -1.
 
     return hypevol.sum()
 

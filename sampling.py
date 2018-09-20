@@ -69,6 +69,20 @@ class SamplingMixin(object):
                                      ' implemented yet...' % _m)
         return methods
 
+    def lazy_sampling(self, size=None, sample_rate=1., candidates='global_pop',
+                      **kwargs):
+        """ Lazy sampling, renders a portion of the population
+        """
+        pop = self.render_pop(candidates)
+        size = int(size * len(pop)) if size < 1. and size > 0. else size
+
+        inds = np.random.permutation(size)[:size]
+
+        if np.random.rand() < sample_rate: return [pop[i] for i in inds]
+
+        return []
+
+
     def random_sampling(self, size=1, sample_rate=0.1,
                         candidates='decision_space', **kwargs):
         """ Random sampling in the descision space or the surrogate's front

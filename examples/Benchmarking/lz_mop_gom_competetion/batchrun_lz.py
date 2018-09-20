@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Created on Wed Aug 15 11:40:25 2018
+Benchmarking MOPRISM-G and GOMORS
+
+MOPRISM-G applies the sampling rules of GOMORS to carry out comparison studies
+
+All tests apply RBFs as surrogate.
 
 @author: niko
 """
@@ -9,9 +13,10 @@ Created on Wed Aug 15 11:40:25 2018
 import sys, os
 import numpy as np
 import itertools
-sys.path.append('/home/niko/Documents/SPr-GAN/00_Projects/MOPRISM/77_Playground/GA/samolib/')
+sys.path.append('/home/niko/Documents/SPr-GAN/00_Projects/MOPRISM/'
+                '77_Playground/GA/samolib/')
 
-from premade import GOMORS
+from premade import MOPRISM
 from ea import MOEAD
 from _utils import nsga_crossover, gaussian_mutator, random_crossover
 from surrogates import RBFN
@@ -52,11 +57,11 @@ def run_sim(n, path, simtitle, REVOLUTION, PROBLEM, seed):
     theo = PROBLEM.solutions()
 
     # Instantiate a population
-    pop = GOMORS(size=POP_SIZE, problem=PROBLEM, max_generation=MAX_GENERATION,
-                 max_episode=MAX_EPISODE, reference=REF, minimize=MINIMIZE,
-                 stopping_rule=STOPPING_RULE, max_eval=MAX_EVAL,
-                 mutation_rate=MUTATION_RATE, revolution=REVOLUTION,
-                 embedded_ea=MOEAD, verbose=VERBOSE, no_improvement_step_tol=4)
+    pop = MOPRISM(size=POP_SIZE, problem=PROBLEM, max_generation=MAX_GENERATION,
+                  max_episode=MAX_EPISODE, reference=REF, minimize=MINIMIZE,
+                  stopping_rule=STOPPING_RULE, max_eval=MAX_EVAL,
+                  mutation_rate=MUTATION_RATE, revolution=REVOLUTION,
+                  embedded_ea=MOEAD, verbose=VERBOSE, no_improvement_step_tol=3)
 
     pop.selection_fun = pop.compute_front
     pop.mutation_fun = gaussian_mutator
@@ -103,7 +108,7 @@ def run_sim(n, path, simtitle, REVOLUTION, PROBLEM, seed):
     pop.render_features(pop.true_front).tofile(directory + 'xs.dat')
     pop.render_targets(pop.true_front).tofile(directory + 'fs.dat')
     np.array(pop.hypervol_diff).tofile(directory + 'hv_diff.dat')
-    np.array(pop.hypervol_cov).tofile(directory + 'hv_cov.dat')
+    np.array(pop.hypervol_cov_effect).tofile(directory + 'hv_cov.dat')
     np.array(pop.hypervol_index).tofile(directory + 'hv_ind.dat')
 
     # ================================Visualization============================== #
@@ -222,6 +227,16 @@ def main():
 
 
 if __name__ == '__main__':
-
     status = main()
 
+#    SEEDS
+#    3859532930  LZ-1 MOPRISM
+#    246340269   LZ-2 MOPRISM
+#    713999656   LZ-3 MOPRISM
+#    3642217896  LZ-4 MOPRISM
+#    2115134461  LZ-5 MOPRISM
+#    3153485751  LZ-1 GOMORS
+#    1374600091  LZ-2 GOMORS
+#    1262503367  LZ-3 GOMORS
+#    2871260456  LZ-4 GOMORS
+#    3266246614  LZ-5 GOMORS

@@ -6,9 +6,8 @@ Created on Thu June 21 09:42:07 2018
 @author: niko
 """
 from abc import abstractmethod
-import warnings
 from multiprocessing import Pool
-import traceback, functools
+# import traceback, functools
 
 import numpy as np
 from multilayer_perceptron import MLPSurrogate
@@ -97,18 +96,18 @@ def gen_param_sets(n_models, params={}):
     return param_sets
 
 
-def trace_unhandled_exceptions(func):
-    @functools.wraps(func)
-    def wrapped_func(*args, **kwargs):
-        try:
-            return func(*args, **kwargs)
-        except:
-            print('Exception in ' + func.__name__)
-            traceback.print_exc()
-    return wrapped_func
+#def trace_unhandled_exceptions(func):
+#    @functools.wraps(func)
+#    def wrapped_func(*args, **kwargs):
+#        try:
+#            return func(*args, **kwargs)
+#        except:
+#            print('Exception in ' + func.__name__)
+#            traceback.print_exc()
+#    return wrapped_func
 
 
-@trace_unhandled_exceptions
+# @trace_unhandled_exceptions
 def fit_parallel(model, X, y):
     model.fit(X, y)
     return model
@@ -206,13 +205,9 @@ class BaseSurrogate(object):
         return None
 
     def _fit_parallel(self, tasks):
-        pool = Pool(self.n_process)
-
-        # Now we use apply() instead of apply_async() for thread safety in np.random
-        result_queue = [pool.apply(fit_parallel, t) for t in tasks]
-        self.models = [r for r in result_queue]
-        pool.close()
-        pool.join()
+        with Pool(self.n_process) as p:
+            # Now we use apply() instead of apply_async() for thread safety in np.random
+            self.models = [p.apply(fit_parallel, t) for t in tasks]
         return None
 
     def predict(self, X):
@@ -399,6 +394,6 @@ class SVM(BaseSurrogate):
                      n_process=n_process, X_scaler=X_scaler, y_scaler=y_scaler,
                      warm_start=warm_start)
 
-        self.models = [GaussianProcessRegressor(**p) for p in self.param_sets]
+        self.models = [SVR(**p) for p in self.param_sets]
 
         return None

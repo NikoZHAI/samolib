@@ -11,7 +11,7 @@ import copy as cp
 import pygmo as pg
 from pyDOE import lhs
 from _utils import rend_k_elites, random_crossover, calc_cwd_dist
-from _utils import calc_hypervol, valid_moead_popsize
+from _utils import calc_hypervol, valid_moead_popsize, rand_select_k
 from _utils import construct_moead_problem_with_surrogate
 from _utils import Cache, _no_fit_fun, construct_problem, hypervolume
 
@@ -114,7 +114,7 @@ class Population(object):
                  selection_fun=None, mutation_fun=None,
                  mutation_rate=0.1, crossover_fun=random_crossover,
                  stopping_rule='max_generation', bounds=[], max_generation=200,
-                 max_eval=8000, minimize=True, n_process=1, dtype=int,
+                 max_eval=8000, minimize=True, n_process=1, dtype=float,
                  mixinteger=False, *args, **kwargs):
 
         if problem is None:
@@ -230,6 +230,30 @@ class Population(object):
 
         return pop
 
+    def _hanoi_crossover_true_front(self, k=10, n=10, p=0.5, **kwargs):
+        arch = []
+        for i in range(n):
+            if np.random.rand() < p:
+                arch += self.compute_front( rand_select_k(self.global_pop, k) )
+            else:
+                arch += self.true_front
+
+        self._crossover(parent_pop=arch, offspring_pop=self.global_pop,
+                        mutate=True, calc_fitness=False, **kwargs)
+        return None
+
+    def _hanoi_crossover(self, k=10, n=10, p=0.5, **kwargs):
+        arch = []
+        for i in range(n):
+            if np.random.rand() < p:
+                arch += self.compute_front( rand_select_k(self.global_pop, k) )
+            else:
+                arch += self.front
+
+        self._crossover(parent_pop=arch, offspring_pop=self.global_pop,
+                        mutate=True, calc_fitness=False, **kwargs)
+        return None
+
     def crossover(self, **kwargs):
         """ Perform crossover in self.front (fake front in surrogate EA)
         """
@@ -241,9 +265,8 @@ class Population(object):
     def _crossover(self, parent_pop, offspring_pop, mutate=True,
                    calc_fitness=True, **kwargs):
 
-        _params = {'elites': parent_pop, 'gene_len': self.gene_len}
-
         if 'multiroutine' in self.crossover_fun.__name__:
+            _params = {'elites': parent_pop, 'gene_len': self.gene_len}
             arch = self.crossover_fun(_pop_size=self.size, params=_params,
                                       **kwargs)
         else:
@@ -367,22 +390,11 @@ class Population(object):
         """ Calculate hypervolume metrics of the given front with an explicit
             reference point
         """
-        # Sort the individuals in the current true front on one axis
-        # sort_by_fitness(tosort=front, obj=0, reverse=minimize)
-
-        # Extract fitness from the true front individuals to form front_matrix
-        front_matrix = self.render_targets(front)
-
-        # Calculate the current hypervolume given the reference
-        self.hypervol.append(calc_hypervol(ref, front_matrix))
-        self.hypervol_pos.append(hypervolume(front_matrix, ref))
-        self.hypervol_index.append(self.problem.n_evals)
-
-        if  analytical is False:
+        if analytical is False:
             self.hypervol_ana = 0.
             return None
 
-        elif self.hypervol.__len__() == 1:
+        elif self.hypervol.__len__() == 0:
             # Sorting order of the analytical Pareto optimals, ascending if
             # maximization problem and vice versa
             order_ = -1 if minimize else 1
@@ -392,22 +404,41 @@ class Population(object):
 
             # Calculate the hypervolume between the reference and analyticals
             self.hypervol_ana = calc_hypervol(ref, _a)
-
         else:
             pass
+
+        # Extract fitness from the true front individuals to form front_matrix
+        front_matrix = self.render_targets(front)
+
+        # Calculate the current hypervolume given the reference
+        self.hypervol.append(calc_hypervol(ref, front_matrix))
+        self.hypervol_pos.append(hypervolume(front_matrix, ref))
+        self.hypervol_index.append(self.problem.n_evals)
 
         return None
 
     @property
-    def hypervol_cov(self):
+    def hypervol_cov_effect(self):
         if self.hypervol_ana == 0.: return []
         cov = np.divide(self.hypervol_pos, self.hypervol_ana)
         return list(cov)
 
     @property
-    def hypervol_diff(self):
+    def hypervol_diff_effect(self):
         if self.hypervol_ana == 0.: return []
         diff = np.subtract(self.hypervol_ana, self.hypervol_pos)
+        return list(diff)
+
+    @property
+    def hypervol_cov(self):
+        if self.hypervol_ana == 0.: return []
+        cov = np.divide(self.hypervol, self.hypervol_ana)
+        return list(cov)
+
+    @property
+    def hypervol_diff(self):
+        if self.hypervol_ana == 0.: return []
+        diff = np.subtract(self.hypervol_ana, self.hypervol)
         return list(diff)
 
     def _render_pop_by_name(self, name='global'):

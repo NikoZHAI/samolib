@@ -11,7 +11,7 @@ import numpy as np
 import itertools
 sys.path.append('/home/niko/Documents/SPr-GAN/00_Projects/MOPRISM/77_Playground/GA/samolib/')
 
-from premade import GOMORS
+from premade import MOPRISM
 from ea import MOEAD
 from _utils import nsga_crossover, gaussian_mutator, random_crossover
 from surrogates import RBFN
@@ -52,11 +52,11 @@ def run_sim(n, path, simtitle, REVOLUTION, PROBLEM, seed):
     theo = PROBLEM.solutions()
 
     # Instantiate a population
-    pop = GOMORS(size=POP_SIZE, problem=PROBLEM, max_generation=MAX_GENERATION,
-                 max_episode=MAX_EPISODE, reference=REF, minimize=MINIMIZE,
-                 stopping_rule=STOPPING_RULE, max_eval=MAX_EVAL,
-                 mutation_rate=MUTATION_RATE, revolution=REVOLUTION,
-                 embedded_ea=MOEAD, verbose=VERBOSE)
+    pop = MOPRISM(size=POP_SIZE, problem=PROBLEM, max_generation=MAX_GENERATION,
+                  max_episode=MAX_EPISODE, reference=REF, minimize=MINIMIZE,
+                  stopping_rule=STOPPING_RULE, max_eval=MAX_EVAL,
+                  mutation_rate=MUTATION_RATE, revolution=REVOLUTION,
+                  embedded_ea=MOEAD, verbose=VERBOSE)
 
     pop.selection_fun = pop.compute_front
     pop.mutation_fun = gaussian_mutator
@@ -103,7 +103,7 @@ def run_sim(n, path, simtitle, REVOLUTION, PROBLEM, seed):
     pop.render_features(pop.true_front).tofile(directory + 'xs.dat')
     pop.render_targets(pop.true_front).tofile(directory + 'fs.dat')
     np.array(pop.hypervol_diff).tofile(directory + 'hv_diff.dat')
-    np.array(pop.hypervol_cov).tofile(directory + 'hv_cov.dat')
+    np.array(pop.hypervol_cov_effect).tofile(directory + 'hv_cov.dat')
     np.array(pop.hypervol_index).tofile(directory + 'hv_ind.dat')
 
     # ================================Visualization============================== #
@@ -202,7 +202,7 @@ def main():
         os.makedirs(directory)
 
     if not os.path.exists(directory+'seeds.txt'):
-        seeds = np.random.randint(0, int(2**32-1), size=4, dtype='u4')
+        seeds = np.random.randint(0, int(2**32-1), size=len(PROBLEM)*len(REVOLUTION), dtype='u4')
         np.savetxt(directory+'seeds.txt', seeds, fmt='%i', delimeter=';')
     else:
         seeds = np.genfromtxt(directory + 'seeds.txt', dtype='u4')

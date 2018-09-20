@@ -18,11 +18,13 @@ from multiprocessing.pool import Pool
 class SurrogateEAMixin(object):
     """ Mixins for Surrogate Assisted EAs
     """
-    def __init__(self, max_episode=60, embedded_ea=None, *args, **kwargs):
+    def __init__(self, max_episode=60, embedded_ea=None, verbosity=1,
+                 *args, **kwargs):
         self.true_front = []
         self.episode = 0
         self.max_episode = max_episode
         self.embedded_ea = embedded_ea
+        self.verbosity = verbosity
         return None
 
     def _render_pop_by_name(self, name='global'):
@@ -60,6 +62,9 @@ class SurrogateEAMixin(object):
             self.episode = 0
 
             local = self.trial(method=trial_method, criterion=trial_criterion)
+
+            if self.mixinteger:
+                local = self.trim_mixinteger(local)
 
             for i in local:
                 if self.cache.find(i, overwrite=True) is None:
@@ -219,9 +224,9 @@ class SurrogateEAMixin(object):
                                   offspring_pop=cp.deepcopy(self.global_pop),
                                   mutate=True, calc_fitness=False)
 
-        new_front = self.expensive_eval(new_pop)
+        new_pop = self.expensive_eval(new_pop)
 
-        self.update_true_front(front=new_front)
+        self.update_true_front(front=new_pop)
 
         if self.surrogate._warm_start:
             self.train_surrogate(samples=new_pop)
@@ -390,6 +395,17 @@ class SurrogateEAMixin(object):
         self.generation = self.max_generation
 
         return None
+
+    def report(self, verbosity=None):
+        verbosity = verbosity or self.verbosity
+
+        if self.episode % verbosity == 0:
+            print("Episode: %s, Total expensive evaluations: %s,\n"
+                  "True front size: %s,\n"
+                  "Surrogate Front size: %s,\n"
+                  "Hypervolume: %.3e \n" %
+                  (self.episode, self.problem.n_evals, len(self.true_front),
+                   self.front.__len__(), self.hypervol[-1]))
 
 
 

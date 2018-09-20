@@ -93,7 +93,7 @@ class LocalSearchMixin(object):
         elif hasattr(at, '__iter__') and at.__len__() == self.gene_len:
             _at = at
         else:
-            raise ValueError('"at" should either be paased an Individual or an'
+            raise ValueError('"at" should either be passed an Individual or an'
                              ' array with the same length as an Individual\'s '
                              'gene.')
 
