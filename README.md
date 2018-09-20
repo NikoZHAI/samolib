@@ -48,7 +48,7 @@ There are two recommended ways two construct a `Problem`:
     from samolib._utils import UnconstrainedProblem
 
     # Construct your problem
-    class ZDT1(UnconstrainedProblem, ZDT_SOLUTION_MIXIN):
+    class ZDT1(UnconstrainedProblem):
         def __init__(self):
             super(ZDT1, self).__init__(dim=30, n_objs=2, fun=zdt1)
             self.bounds = np.repeat([[0., 1.]], self.dim, axis=0)
