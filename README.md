@@ -126,7 +126,7 @@ mop.config_surrogate(typ='ANN', params=params_surrogate, n_process=2,
 import sys, os
 import numpy as np
 import itertools
-sys.path.append('/home/niko/Documents/SPr-GAN/00_Projects/MOPRISM/77_Playground/GA/samolib/')
+sys.path.append('path_to_samolib/')
 
 from premade import MOPRISM
 from ea import MOEAD
