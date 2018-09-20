@@ -1,0 +1,10 @@
+deap==1.2.2
+matplotlib==2.2.2
+numpy==1.14.2
+pandas==0.22.0
+pyDOE==0.3.8
+pygmo==2.8
+pySOT==0.1.36
+scikit-learn==0.19.1
+scipy==1.0.1
+
